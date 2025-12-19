@@ -1,0 +1,503 @@
+import sys
+import argparse
+import calendar
+import asyncio
+import aiohttp
+import qrcode
+import json
+from datetime import datetime
+from io import BytesIO
+from typing import Optional, Dict, Any, Union
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps, ImageEnhance
+
+class MusicCard:
+    def __init__(self, font_path: str):
+        self.font_path = font_path
+        # 布局常量
+        self.W = 1000
+        self.MARGIN_TOP = 40
+        self.MARGIN_SIDE = 40
+        self.MARGIN_BOTTOM = 90
+        self.CARD_W = self.W - (self.MARGIN_SIDE * 2)
+        self.INNER_PAD = 40
+        self.CONTENT_LEFT_X = self.MARGIN_SIDE + self.INNER_PAD
+        self.CONTENT_RIGHT_X = self.MARGIN_SIDE + self.CARD_W - self.INNER_PAD
+        self.MAX_TEXT_W = self.CARD_W - (self.INNER_PAD * 2)
+        
+        # 颜色常量
+        self.C_MAIN = "#2A2A2A"
+        self.C_SUB = "#555555"
+        self.C_QUOTE = "#4A4A4A"
+        self.C_ACCENT = "#D0D0D0"
+        self.C_FOOTER_CENTER = "#555555"
+
+    # --- 数据获取 ---
+
+    @staticmethod
+    async def download_image(url: str) -> Image.Image:
+        """[异步] 下载图片"""
+        if not url:
+            return Image.new('RGB', (600, 600), color='#D3D3D3')
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    if resp.status != 200:
+                        print(f"图片下载失败: {resp.status}")
+                        return Image.new('RGB', (600, 600), color='#D3D3D3')
+                    content = await resp.read()
+                    return Image.open(BytesIO(content))
+        except Exception as e:
+            print(f"图片下载出错: {e}")
+            return Image.new('RGB', (600, 600), color='#D3D3D3')
+
+    @staticmethod
+    async def fetch_ncm_song_info(ncm_id: int) -> Optional[Dict]:
+        """[异步] 获取网易云音乐歌曲详情"""
+        url = f"https://music.163.com/api/song/detail/?id={ncm_id}&ids=%5B{ncm_id}%5D"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"}
+        print(f"正在从 NCM API 获取 ID {ncm_id} 的信息...")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200: return None
+                    text_resp = await resp.text()
+                    data = json.loads(text_resp)
+                    if not data.get('songs'): return None
+                    song = data['songs'][0]
+                    return {
+                        "title": song['name'],
+                        "artist": " / ".join([a['name'] for a in song['artists']]),
+                        "cover_url": song['album']['picUrl'],
+                        "ncm_id": ncm_id
+                    }
+        except Exception as e:
+            print(f"NCM API Error: {e}")
+            return None
+
+    @staticmethod
+    async def fetch_daily_recommendation(date_str: str) -> Optional[Dict]:
+        """
+        [异步] 获取每日推荐 (API Priority 1)
+        URL: https://amlldb.bikonoo.com/api/daily-recommendations?date={date}
+        """
+        url = f"https://amlldb.bikonoo.com/api/daily-recommendations?date={date_str}"
+        print(f"正在获取 {date_str} 的每日推荐...")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        print(f"Error: {resp.status}")
+                        return None
+                    
+                    # API 可能返回 "null" 或 JSON 对象
+                    text_resp = await resp.text()
+                    if not text_resp or text_resp.strip() == "null":
+                        print("该日期无每日推荐数据")
+                        return None
+                    
+                    data = json.loads(text_resp)
+                    # 校验返回数据是否有效
+                    if not isinstance(data, dict) or 'ncm_id' not in data:
+                        return None
+
+                    return {
+                        "ncm_id": data.get('ncm_id'),
+                        "date": data.get('date'),       # "2025-12-17"
+                        "username": data.get('username'), # -> quote_source
+                        "comment": data.get('comment')    # -> quote_content
+                    }
+        except Exception as e:
+            print(f"Error: {e}")
+            return None
+
+    # --- 图像处理算法 ---
+
+    @staticmethod
+    def get_dominant_color(image: Image.Image):
+        return image.copy().resize((1, 1), resample=Image.Resampling.HAMMING).getpixel((0, 0))
+
+    @staticmethod
+    def get_adaptive_month_color(bg_sample, theme_rgb):
+        bg_color = bg_sample.resize((1, 1), resample=Image.Resampling.HAMMING).getpixel((0, 0))
+        bg_lum = (bg_color[0]*299 + bg_color[1]*587 + bg_color[2]*114) / 1000
+        
+        def adjust(c, factor):
+            return tuple(min(255, max(0, int(i * factor))) for i in c)
+        
+        return adjust(theme_rgb, 0.6) if bg_lum > 140 else adjust(theme_rgb, 1.8)
+
+    @staticmethod
+    def get_adaptive_deco_color(bg_sample, theme_rgb):
+        bg_color = bg_sample.resize((1, 1), resample=Image.Resampling.HAMMING).getpixel((0, 0))
+        bg_lum = (bg_color[0]*299 + bg_color[1]*587 + bg_color[2]*114) / 1000
+        
+        def blend(c1, c2, ratio):
+            return tuple(int(c1[i]*(1-ratio) + c2[i]*ratio) for i in range(3))
+        
+        white = (255, 255, 255)
+        # 亮背景混白色90%，暗背景混白色20%
+        return blend(theme_rgb, white, 0.90) if bg_lum > 150 else blend(theme_rgb, white, 0.2)
+
+    @staticmethod
+    def get_contrasting_text_color(region_image):
+        color = region_image.resize((1, 1), resample=Image.Resampling.HAMMING).getpixel((0, 0))
+        lum = (color[0]*299 + color[1]*587 + color[2]*114) / 1000
+        return "#4a3b32" if lum > 120 else "#f2f2f2"
+
+    @staticmethod
+    def generate_styled_qrcode(data, theme_color, size=120):
+        qr = qrcode.QRCode(version=1, border=1, box_size=10)
+        qr.add_data(data)
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGBA")
+        
+        new_data = []
+        tr, tg, tb = theme_color
+        for item in qr_img.getdata():
+            # 黑色 -> 主题色带透明度; 白色 -> 透明
+            if item[0] < 128: new_data.append((tr, tg, tb, 230))
+            else: new_data.append((255, 255, 255, 0))
+        qr_img.putdata(new_data)
+        return qr_img.resize((size, size), Image.Resampling.LANCZOS)
+
+    @staticmethod
+    def create_gradient_mask(w, h):
+        gradient = Image.new('L', (1, h))
+        for y in range(h):
+            gradient.putpixel((0, y), int(255 * (y / h)))
+        return gradient.resize((w, h))
+
+    @staticmethod
+    def create_rounded_mask(size, radius):
+        mask = Image.new("L", size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0) + size, radius=radius, fill=255)
+        return mask
+
+    # --- 布局与绘制 ---
+
+    def _process_text_wrapping(self, draw, text, font, max_width):
+        final_lines = []
+        for paragraph in text.split('\n'):
+            if not paragraph:
+                final_lines.append("")
+                continue
+            curr = ""
+            for char in paragraph:
+                if draw.textlength(curr + char, font=font) <= max_width:
+                    curr += char
+                else:
+                    final_lines.append(curr)
+                    curr = char
+            if curr: final_lines.append(curr)
+        bbox = font.getbbox("高")
+        return final_lines, bbox[3] - bbox[1]
+
+    def _draw_text_right(self, draw, text, font, right_x, y, fill):
+        w = draw.textlength(text, font=font)
+        draw.text((right_x - w, y), text, font=font, fill=fill)
+
+    async def generate(self, 
+                       data: Dict[str, Any], 
+                       inner_blurred: bool = False, 
+                       show_qrcode: bool = False) -> Image.Image:
+        """
+        生成音乐卡片的核心方法
+        :param data: 包含 title, artist, cover_url, quote_content, quote_source, date_obj, ncm_id
+        :param inner_blurred: 是否开启内部模糊
+        :param show_qrcode: 是否显示二维码
+        :return: PIL.Image 对象
+        """
+        # 准备数据
+        title = data.get('title', '')
+        artist = data.get('artist', '')
+        cover_url = data.get('cover_url', '')
+        quote_content = data.get('quote_content', '')
+        quote_source = data.get('quote_source', '')
+        date_obj = data.get('date_obj', datetime.now())
+        ncm_id = data.get('ncm_id')
+
+        date_month_str = calendar.month_abbr[date_obj.month]
+        date_day_int = date_obj.day
+
+        # 下载资源
+        print(f"下载封面: {cover_url}")
+        cover_img_raw = (await self.download_image(cover_url)).convert("RGB")
+        theme_rgb = self.get_dominant_color(cover_img_raw)
+        print(f"识别主题色: {theme_rgb}")
+
+        try:
+            font_title = ImageFont.truetype(self.font_path, 44)
+            font_artist = ImageFont.truetype(self.font_path, 26)
+            font_date_num = ImageFont.truetype(self.font_path, 90)
+            font_date_month = ImageFont.truetype(self.font_path, 40)
+            font_quote = ImageFont.truetype(self.font_path, 34)
+            font_quote_sub = ImageFont.truetype(self.font_path, 26)
+            font_deco = ImageFont.truetype(self.font_path, 100)
+            font_fc = ImageFont.truetype(self.font_path, 32)
+            font_fo = ImageFont.truetype(self.font_path, 22)
+        except IOError:
+            print(f"字体加载失败: {self.font_path}")
+            return Image.new('RGB', (100, 100), color='red')
+
+        # 布局计算
+        QR_SIZE = 120
+        QR_GAP = 20
+        
+        # 文字最大宽度 (避让二维码)
+        text_w = self.MAX_TEXT_W
+        if show_qrcode and ncm_id:
+            text_w -= (QR_SIZE + QR_GAP)
+
+        temp_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+        
+        # 头部文本高度
+        t_lines, t_h = self._process_text_wrapping(temp_draw, title, font_title, text_w)
+        a_lines, a_h = self._process_text_wrapping(temp_draw, artist, font_artist, text_w)
+        
+        text_block_h = (len(t_lines) * t_h * 1.3) + 15 + (len(a_lines) * a_h * 1.5)
+        
+        # 头部实际高度 (取文本块与二维码的较大值)
+        header_h_real = max(text_block_h, QR_SIZE) if (show_qrcode and ncm_id) else text_block_h
+        header_section_h = header_h_real + 30 + 4 + 40 # + padding + line + padding
+
+        # 中间区域 (日期 & 引言)
+        q_x = self.CONTENT_LEFT_X + 240
+        q_max_w = self.CONTENT_RIGHT_X - q_x
+        q_lines, q_font_h = self._process_text_wrapping(temp_draw, quote_content, font_quote, q_max_w)
+        q_h = (len(q_lines) * q_font_h * 1.6) + 40 + 30 # + deco + padding
+        middle_h = max(200, q_h)
+
+        # 底部
+        footer_inner_h = 20 + 20 + 32 + 25
+
+        # 总高度
+        cover_size = self.MAX_TEXT_W
+        total_card_h = self.INNER_PAD + cover_size + 30 + header_section_h + middle_h + footer_inner_h
+        total_img_h = int(total_card_h + self.MARGIN_TOP + self.MARGIN_BOTTOM)
+
+        # 绘制主背景
+        bg_img = ImageOps.fit(cover_img_raw, (self.W, total_img_h), method=Image.Resampling.LANCZOS)
+        bg_img = bg_img.filter(ImageFilter.GaussianBlur(radius=100))
+        bg_img = ImageEnhance.Brightness(bg_img).enhance(0.7)
+
+        # 卡片背景
+        if inner_blurred:
+            card_crop = bg_img.crop((self.MARGIN_SIDE, self.MARGIN_TOP, 
+                                     self.MARGIN_SIDE + self.CARD_W, self.MARGIN_TOP + total_card_h))
+            card_crop = ImageEnhance.Brightness(card_crop).enhance(1.2)
+            white_layer = Image.new("RGB", card_crop.size, "#FDFDFD")
+            mask = self.create_gradient_mask(card_crop.width, card_crop.height)
+            card_bg = Image.composite(white_layer, card_crop, mask)
+        else:
+            card_bg = Image.new("RGB", (self.CARD_W, int(total_card_h)), "#FDFDFD")
+
+        # 贴卡片
+        card_mask = self.create_rounded_mask(card_bg.size, 40)
+        bg_img.paste(card_bg, (self.MARGIN_SIDE, self.MARGIN_TOP), card_mask)
+        draw = ImageDraw.Draw(bg_img)
+
+        # 贴封面
+        cover_resized = cover_img_raw.resize((cover_size, cover_size), Image.Resampling.LANCZOS)
+        bg_img.paste(cover_resized, 
+                     (self.CONTENT_LEFT_X, self.MARGIN_TOP + self.INNER_PAD), 
+                     self.create_rounded_mask(cover_resized.size, 30))
+
+        # 绘制内容
+        cursor_y = self.MARGIN_TOP + self.INNER_PAD + cover_size + 30
+        header_start_y = cursor_y
+
+        # 绘制头部部分
+        # 标题
+        for line in t_lines:
+            draw.text((self.CONTENT_LEFT_X, cursor_y), line, font=font_title, fill=self.C_MAIN)
+            cursor_y += t_h * 1.3
+        cursor_y += 15
+        # 艺术家
+        for line in a_lines:
+            draw.text((self.CONTENT_LEFT_X, cursor_y), line, font=font_artist, fill=self.C_SUB)
+            cursor_y += a_h * 1.5
+
+        # 二维码 (头部右侧)
+        if show_qrcode and ncm_id:
+            song_url = f"https://music.163.com/#/song?id={ncm_id}"
+            qr_img = self.generate_styled_qrcode(song_url, theme_rgb, size=QR_SIZE)
+            bg_img.paste(qr_img, 
+                         (int(self.CONTENT_RIGHT_X - QR_SIZE), int(header_start_y)), 
+                         qr_img)
+
+        # 分隔线
+        sep_y = header_start_y + header_h_real + 30
+        for x in range(self.CONTENT_LEFT_X, self.CONTENT_RIGHT_X, 20):
+            draw.ellipse((x, sep_y, x+4, sep_y+4), fill=self.C_ACCENT)
+        mid_y = sep_y + 40
+
+        # 绘制中间部分
+        # 日期
+        date_x = self.CONTENT_LEFT_X + 20
+        month_color = self.get_adaptive_month_color(
+            bg_img.crop((date_x, mid_y, date_x+80, mid_y+40)), theme_rgb
+        )
+        draw.text((date_x, mid_y), date_month_str, font=font_date_month, fill=month_color)
+        
+        m_bbox = font_date_month.getbbox("A")
+        draw.text((date_x, mid_y + (m_bbox[3]-m_bbox[1]) + 10), str(date_day_int), font=font_date_num, fill=self.C_MAIN)
+
+        # 引言
+        q_curr_y = mid_y + 5
+        for line in q_lines:
+            draw.text((q_x, q_curr_y), line, font=font_quote, fill=self.C_QUOTE)
+            q_curr_y += q_font_h * 1.6
+
+        # 装饰引号
+        deco_x = self.CONTENT_RIGHT_X - 80
+        deco_y = q_curr_y - 20
+        deco_color = self.get_adaptive_deco_color(
+            bg_img.crop((int(deco_x), int(deco_y), int(deco_x+60), int(deco_y+60))), theme_rgb
+        )
+        draw.text((deco_x, deco_y), "❞", font=font_deco, fill=deco_color)
+        
+        # 来源
+        self._draw_text_right(draw, "--来自 @" + quote_source + " 的评论", font_quote_sub, self.CONTENT_RIGHT_X, q_curr_y + 20, self.C_SUB)
+
+        # 绘制底部
+        # 虚线分隔符 & 文字
+        bot_sep_y = mid_y + middle_h + 10
+        for x in range(self.CONTENT_LEFT_X, self.CONTENT_RIGHT_X, 20):
+            draw.ellipse((x, bot_sep_y, x+4, bot_sep_y+4), fill=self.C_ACCENT)
+        
+        foot_y = bot_sep_y + 24
+        ct = "AMLL 亲友团 | 今日推荐"
+        ct_bbox = draw.textbbox((0,0), ct, font=font_fc)
+        draw.text((self.MARGIN_SIDE + (self.CARD_W - (ct_bbox[2]-ct_bbox[0]))/2, foot_y), 
+                  ct, font=font_fc, fill=self.C_FOOTER_CENTER)
+
+        # 水印
+        outer_y = self.MARGIN_TOP + total_card_h + 20
+        outer_right_x = self.MARGIN_SIDE + self.CARD_W
+        outer_color = self.get_contrasting_text_color(bg_img.crop((self.W-300, total_img_h-80, self.W, total_img_h)))
+        
+        self._draw_text_right(draw, "Designed by HamuChan", font_fo, outer_right_x, outer_y, outer_color)
+        self._draw_text_right(draw, "Generated by KhBot v1.6.0", font_fo, outer_right_x, outer_y + 30, outer_color)
+
+        # 左侧二维码 (外部)
+        #if show_qrcode and ncm_id:
+        #    song_url = f"https://music.163.com/#/song?id={ncm_id}"
+        #    ext_qr = self.generate_styled_qrcode(song_url, theme_rgb, size=80)
+        #    bg_img.paste(ext_qr, (self.MARGIN_SIDE, int(outer_y)-5), ext_qr)
+
+        return bg_img
+
+# --- 逻辑控制入口 ---
+
+async def generate_music_card_process(
+    date_str: str,
+    ncm_id_arg: Optional[int] = None,
+    info_arg: Optional[list] = None,
+    quote_arg: Optional[list] = None,
+    inner_blurred: bool = False,
+    show_qrcode: bool = False,
+    font_path: str = "PingFangSC.ttf"
+) -> Optional[Image.Image]:
+    """
+    逻辑控制中心：根据优先级获取数据并调用绘图
+    优先级：每日推荐 API > 命令行 NCM ID > 命令行手动 Info
+    """
+    card_gen = MusicCard(font_path)
+    final_data = {}
+    
+    # 初始化日期对象
+    try:
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        print(f"⚠️ 日期格式错误 ({date_str})，使用今日")
+        date_obj = datetime.now()
+        date_str = date_obj.strftime("%Y-%m-%d")
+    
+    final_data['date_obj'] = date_obj
+
+    # 尝试获取每日推荐
+    daily_data = await card_gen.fetch_daily_recommendation(date_str)
+    
+    if daily_data:
+        print("成功获取每日推荐数据")
+        # 从每日推荐中提取 ncm_id 和推荐语
+        rec_ncm_id = daily_data.get('ncm_id')
+        if rec_ncm_id:
+            # 补充歌曲信息
+            song_info = await card_gen.fetch_ncm_song_info(rec_ncm_id)
+            if song_info:
+                final_data.update(song_info) # title, artist, cover_url, ncm_id
+        
+        # 覆盖引言
+        if daily_data.get('comment'):
+            final_data['quote_content'] = daily_data['comment']
+        if daily_data.get('username'):
+            src = daily_data['username']
+            final_data['quote_source'] = src #if src.startswith("-") else f"- {src}"
+            
+    else:
+        # 回退到 NCM ID 参数
+        print("无每日推荐或获取失败，检查命令行参数...")
+        if ncm_id_arg:
+            song_info = await card_gen.fetch_ncm_song_info(ncm_id_arg)
+            if song_info:
+                final_data.update(song_info)
+        
+        # 回退到手动 Info 参数
+        elif info_arg and len(info_arg) == 3:
+            final_data['title'] = info_arg[0]
+            final_data['artist'] = info_arg[1]
+            final_data['cover_url'] = info_arg[2]
+
+    # 检查是否具备生成条件
+    if 'title' not in final_data:
+        print("错误: 无法获取歌曲信息 (Daily API 返回值为空, 且未提供有效 NCM ID 或 Info)")
+        return None
+
+    # 处理手动引言 (仅当 API 未提供引言时，才使用命令行参数覆盖默认值)
+    # 如果 Daily API 已经填入了 quote_content，则忽略命令行 quote
+    if 'quote_content' not in final_data:
+        if quote_arg and len(quote_arg) == 2:
+            final_data['quote_content'] = quote_arg[0].replace('\\n', '\n')
+            final_data['quote_source'] = quote_arg[1]
+        else:
+            # 默认引言
+            final_data['quote_content'] = "人生是一场归途。\n我有我的大海，你有你的他乡。"
+            final_data['quote_source'] = "--今日音乐寄语"
+
+    # 生成图片
+    return await card_gen.generate(final_data, inner_blurred, show_qrcode)
+
+
+# --- 命令行入口 ---
+
+async def main():
+    parser = argparse.ArgumentParser(description="生成仿网易云音乐风格的音乐卡片")
+    parser.add_argument("--date", type=str, default=datetime.now().strftime("%Y-%m-%d"), help="日期 YYYY-MM-DD")
+    parser.add_argument("--ncm-id", type=int, help="网易云音乐歌曲 ID")
+    parser.add_argument("--info", nargs=3, metavar=('TITLE', 'ARTIST', 'COVER_URL'), help="手动指定歌曲信息")
+    parser.add_argument("--quote", nargs=2, metavar=('CONTENT', 'SOURCE'), help="引言内容与来源")
+    parser.add_argument("--inner-blurred", action="store_true", help="卡片内部背景模糊")
+    parser.add_argument("--qrcode", action="store_true", help="生成二维码")
+    
+    args = parser.parse_args()
+
+    img = await generate_music_card_process(
+        date_str=args.date,
+        ncm_id_arg=args.ncm_id,
+        info_arg=args.info,
+        quote_arg=args.quote,
+        inner_blurred=args.inner_blurred,
+        show_qrcode=args.qrcode
+    )
+
+    if img:
+        filename = f"music_card_{args.date}.png"
+        img.save(filename)
+        print(f"图片保存成功: {filename}")
+        # img.show()
+
+if __name__ == "__main__":
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    asyncio.run(main())
