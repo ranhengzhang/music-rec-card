@@ -8,7 +8,7 @@
 
 ```
 usage: music_card_gen.py [-h] [--date DATE] [--ncm-id NCM_ID] [--info TITLE ARTIST COVER_URL] [--quote CONTENT SOURCE]
-                         [--inner-blurred] [--qrcode]
+                         [--inner-blurred] [--qrcode] [--card-only]
 
 生成仿网易云音乐风格的音乐卡片
 
@@ -22,6 +22,7 @@ options:
                         引言内容与来源
   --inner-blurred       卡片内部背景模糊
   --qrcode              生成二维码
+  --card-only           仅生成卡片模式(移除日期与引言)
 ```
 
 在其他 Python 脚本中调用（确保 `music_card_gen.py` 在同目录）：
