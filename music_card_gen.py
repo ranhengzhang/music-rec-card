@@ -291,9 +291,9 @@ class MusicCard:
         header_h_real = max(text_block_h, QR_SIZE) if (show_qrcode and ncm_id) else text_block_h
         
         if card_only:
-            header_section_h = header_h_real + 30 + 4 
+            header_section_h = header_h_real
             middle_h = 0
-            footer_inner_h = 20 + 32 + 25
+            footer_inner_h = 60
         else:
             header_section_h = header_h_real + 30 + 4 + 40 # + padding + line + padding
 
@@ -309,7 +309,9 @@ class MusicCard:
 
         # 总高度
         cover_size = self.MAX_TEXT_W
-        total_card_h = self.INNER_PAD + cover_size + 30 + header_section_h + middle_h + footer_inner_h
+        total_card_h = self.INNER_PAD + cover_size + header_section_h + footer_inner_h
+        if not card_only:
+            total_card_h = self.INNER_PAD + cover_size + 30 + header_section_h + middle_h + footer_inner_h
         total_img_h = int(total_card_h + self.MARGIN_TOP + self.MARGIN_BOTTOM)
 
         # 绘制主背景
@@ -363,12 +365,15 @@ class MusicCard:
                          (int(self.CONTENT_RIGHT_X - QR_SIZE), int(header_start_y)), 
                          qr_img)
 
-        # 分隔线
-        sep_y = header_start_y + header_h_real + 30
-        for x in range(self.CONTENT_LEFT_X, self.CONTENT_RIGHT_X, 20):
-            draw.ellipse((x, sep_y, x+4, sep_y+4), fill=self.C_ACCENT)
 
+        sep_y = header_start_y + header_h_real
         if not card_only:
+            # 分隔线
+            sep_y = header_start_y + header_h_real + 30
+            for x in range(self.CONTENT_LEFT_X, self.CONTENT_RIGHT_X, 20):
+                draw.ellipse((x, sep_y, x+4, sep_y+4), fill=self.C_ACCENT)
+
+
             mid_y = sep_y + 40
             # 带推荐时绘制中间部分
             # 日期
