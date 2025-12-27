@@ -147,11 +147,11 @@ class MusicCard:
 
                     data = json.loads(text_resp)
                     # 校验返回数据是否有效
-                    if not isinstance(data, dict) or 'music_id' not in data:
+                    if not isinstance(data, dict) or 'ncm_id' not in data:
                         return None
 
                     return {
-                        "music_id": data.get('music_id'),
+                        "music_id": data.get('ncm_id'),
                         "date": data.get('date'),  # "2025-12-17"
                         "username": data.get('username'),  # -> quote_source
                         "comment": data.get('comment'),  # -> quote_content
