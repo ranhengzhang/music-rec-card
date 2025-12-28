@@ -14,6 +14,7 @@ import aiohttp
 import qrcode
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps, ImageEnhance
 
+TTML_DB_URL_PREFIX = "https://amlldb.bikonoo.com"
 
 class MusicCard:
     DAILY = "daily"
@@ -718,7 +719,7 @@ async def fetch_lys(music_id: str, platform: str):
         "ncm": "ncm-lyrics",
         "qq": "qq-lyrics"
     }
-    url = f"https://amlldb.bikonoo.com/{folder[platform]}/{music_id}.ttml"
+    url = f"{TTML_DB_URL_PREFIX}/{folder[platform]}/{music_id}.ttml"
     print(f"正在获取 {music_id} 的 TTML 文件...")
     try:
         async with aiohttp.ClientSession() as session:
