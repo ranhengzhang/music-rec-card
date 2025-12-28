@@ -421,15 +421,15 @@ class MusicCard:
         print(f"识别主题色: {theme_rgb}")
 
         try:
-            font_title = ImageFont.truetype(self.font_path, 44)
-            font_artist = ImageFont.truetype(self.font_path, 26)
-            font_date_num = ImageFont.truetype(self.font_path, 90)
-            font_date_month = ImageFont.truetype(self.font_path, 40)
-            font_quote = ImageFont.truetype(self.font_path, 34)
-            font_quote_sub = ImageFont.truetype(self.font_path, 26)
-            font_deco = ImageFont.truetype(self.font_path, 100)
-            font_fc = ImageFont.truetype(self.font_path, 32)
-            font_fo = ImageFont.truetype(self.font_path, 22)
+            font_title = ImageFont.truetype(self.font_path, 44, index=8)
+            font_artist = ImageFont.truetype(self.font_path, 26, index=8)
+            font_date_num = ImageFont.truetype(self.font_path, 90, index=5)
+            font_date_month = ImageFont.truetype(self.font_path, 40, index=5)
+            font_quote = ImageFont.truetype(self.font_path, 34, index=2)
+            font_quote_sub = ImageFont.truetype(self.font_path, 26, index=11)
+            font_deco = ImageFont.truetype(self.font_path, 100, index=5)
+            font_fc = ImageFont.truetype(self.font_path, 32, index=32)
+            font_fo = ImageFont.truetype(self.font_path, 22, index=2)
         except IOError:
             print(f"字体加载失败: {self.font_path}")
             return Image.new('RGB', (100, 100), color='red')
@@ -667,7 +667,7 @@ class MusicCard:
             deco_color = self.get_adaptive_deco_color(
                 bg_img.crop((int(deco_x), int(deco_y), int(deco_x + 60), int(deco_y + 60))), theme_rgb
             )
-            draw.text((deco_x, deco_y), "❞", font=font_deco, fill=deco_color)
+            draw.text((deco_x, deco_y), "”", font=font_deco, fill=deco_color)
 
             # 来源
             if mode == self.DAILY:
@@ -788,7 +788,7 @@ async def generate_music_card_process(
         quote_arg: Optional[list] = None,
         inner_blurred: bool = False,
         show_qrcode: bool = False,
-        font_path: str = "PingFangSC.ttf",
+        font_path: str = "PingFang.ttc",
         qq_music_cookie: str = ""
 ) -> Optional[Image.Image]:
     """
