@@ -713,7 +713,7 @@ class MusicCard:
 
             # 装饰引号
             deco_x = self.CONTENT_RIGHT_X - 80
-            deco_y = total_img_h - 140 if mode == self.DAILY else total_img_h - 180
+            deco_y = total_img_h - 260 if mode == self.DAILY else total_img_h - 180
             deco_color = self.get_adaptive_deco_color(
                 bg_img.crop((int(deco_x), int(deco_y), int(deco_x + 60), int(deco_y + 60))), theme_rgb
             )
