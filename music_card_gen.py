@@ -201,8 +201,8 @@ class MusicCard:
             return tuple(int(c1[i] * (1 - ratio) + c2[i] * ratio) for i in range(3))
 
         white = (255, 255, 255)
-        # 亮背景混白色90%，暗背景混白色20%
-        return blend(theme_rgb, white, 0.90) if bg_lum > 150 else blend(theme_rgb, white, 0.2)
+        # 亮背景混白色20%，暗背景混白色60%
+        return blend(theme_rgb, white, 0.2) if bg_lum > 150 else blend(theme_rgb, white, 0.6)
 
     @staticmethod
     def get_contrasting_text_color(region_image):
